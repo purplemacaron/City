@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>서울 드라이빙 - Seoul Driving 3D</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { 
+    overflow: hidden; 
+    background: #1a1a2e;
+    font-family: 'Malgun Gothic', sans-serif;
+}
+#gameCanvas { 
+    display: block; 
+    width: 100vw; 
+    height: 100vh;
+}
+#ui {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    color: #fff;
+    font-size: 14px;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+    z-index: 100;
+}
+#minimap {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    width: 200px;
+    height: 200px;
+    background: rgba(0, 0, 0, 0.7);
+    border: 3px solid #fff;
+    border-radius: 10px;
+    z-index: 100;
+}
+#speedometer {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    width: 150px;
+    height: 150px;
+    background: rgba(0, 0, 0, 0.7);
+    border: 3px solid #fff;
+    border-radius: 50%;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+#speedValue {
+    font-size: 36px;
+    font-weight: bold;
+    color: #00ff88;
+}
+#speedLabel {
+    font-size: 14px;
+    color: #fff;
+}
+#carSelector {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 15px;
+    border-radius: 10px;
+    color: #fff;
+    z-index: 100;
+}
+#carSelector select {
+    padding: 8px;
+    font-size: 14px;
+    border-radius: 5px;
+    border: 2px solid #00ff88;
+    background: #1a1a2e;
+    color: #fff;
+    cursor: pointer;
+}
+#controls {
+    position: absolute;
+    bottom: 180px;
+    left: 20px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 10px;
+    border-radius: 10px;
+    color: #fff;
+    font-size: 12px;
+    z-index: 100;
+}
+#loading {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    color: #fff;
+}
+#loading h1 {
+    font-size: 48px;
+    margin-bottom: 20px;
+    color: #00ff88;
+}
+#loadingBar {
+    width: 300px;
+    height: 20px;
+    background: #333;
+    border-radius: 10px;
+    overflow: hidden;
+}
+#loadingProgress {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #00ff88, #00ccff);
+    transition: width 0.3s;
+}
+</style>
+</head>
+<body>
+<div id="loading">
+    <h1>🚗 서울 드라이빙</h1>
+    <p>서울시를 로딩 중...</p>
+    <div id="loadingBar"><div id="loadingProgress"></div></div>
+</div>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="ui">
+    <div>위치: <span id="location">강남대로</span></div>
+    <div>FPS: <span id="fps">60</span></div>
+</div>
+
+<div id="carSelector">
+    <label>차량 선택:</label><br>
+    <select id="carSelect" onchange="changeCar()">
+        <option value="sedan">세단 (현대 쏘나타)</option>
+        <option value="suv">SUV (기아 모하비)</option>
+        <option value="sports">스포츠카 (제네시스 G70)</option>
+        <option value="taxi">택시 (K5 택시)</option>
+        <option value="bus">버스 (서울시 버스)</option>
+        <option value="truck">트럭 (현대 파비스)</option>
+    </select>
+</div>
+
+<div id="speedometer">
+    <div id="speedValue">0</div>
+    <div id="speedLabel">km/h</div>
+</div>
+
+<div id="minimap">
+    <canvas id="minimapCanvas" width="200" height="200"></canvas>
+</div>
+
+<div id="controls">
+    <div>⬆️ W / ↑ : 가속</div>
+    <div>⬇️ S / ↓ : 브레이크</div>
+    <div>⬅️ A / ← : 좌회전</div>
+    <div>➡️ D / → : 우회전</div>
+    <div>Space : 핸드브레이크</div>
+    <div>C : 카메라 변경</div>
+</div>
+
+<script>
+// Game state
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const minimapCanvas = document.getElementById('minimapCanvas');
+const minimapCtx = minimapCanvas.getContext('2d');
+
+let width, height;
+let lastTime = performance.now();
+let fps = 60;
+let frameCount = 0;
+let lastFpsUpdate = 0;
+
+// Camera
+let camera = {
+    x: 0,
+    y: -100,
+    z: -200,
+    angleY: 0,
+    angleX: 0.3,
+    distance: 300,
+    mode: 0 // 0: behind, 1: top, 2: cockpit
+};
+
+// Player car
+let player = {
+    x: 0,
+    y: 0,
+    z: 0,
+    speed: 0,
+    maxSpeed: 120,
+    acceleration: 0.5,
+    braking: 1,
+    turning: 0.03,
+    angle: 0,
+    width: 20,
+    height: 15,
+    length: 45,
+    color: '#ffffff'
+};
+
+// Car types
+const carTypes = {
+    sedan: { maxSpeed: 140, acceleration: 0.6, width: 18, height: 12, length: 42, color: '#c0c0c0' },
+    suv: { maxSpeed: 130, acceleration: 0.5, width: 20, height: 18, length: 48, color: '#2c3e50' },
+    sports: { maxSpeed: 180, acceleration: 0.9, width: 19, height: 10, length: 44, color: '#e74c3c' },
+    taxi: { maxSpeed: 120, acceleration: 0.5, width: 18, height: 14, length: 45, color: '#f39c12' },
+    bus: { maxSpeed: 90, acceleration: 0.3, width: 25, height: 30, length: 100, color: '#3498db' },
+    truck: { maxSpeed: 100, acceleration: 0.4, width: 24, height: 28, length: 80, color: '#27ae60' }
+};
+
+// City data - Seoul inspired layout
+const citySize = 4000;
+const blockSize = 200;
+const roadWidth = 40;
+const buildings = [];
+const roads = [];
+const landmarks = [];
+
+// Input handling
+const keys = {};
+let lastInputTime = 0;
+
+// Initialize
+function init() {
+    resize();
+    window.addEventListener('resize', resize);
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+    
+    generateCity();
+    
+    // Hide loading screen
+    setTimeout(() => {
+        document.getElementById('loading').style.display = 'none';
+    }, 1500);
+    
+    requestAnimationFrame(gameLoop);
+}
+
+function resize() {
+    width = canvas.width = window.innerWidth;
+    height = canvas.height = window.innerHeight;
+}
+
+function generateCity() {
+    let progress = 0;
+    const totalSteps = 10;
+    
+    // Generate grid-based city layout
+    for (let x = -citySize/2; x < citySize/2; x += blockSize) {
+        for (let z = -citySize/2; z < citySize/2; z += blockSize) {
+            // Roads form a grid
+            if (x % (blockSize * 2) === 0 || z % (blockSize * 2) === 0) {
+                roads.push({
+                    x: x,
+                    z: z,
+                    width: roadWidth,
+                    length: blockSize,
+                    type: (Math.abs(x) < 100 || Math.abs(z) < 100) ? 'main' : 'street'
+                });
+            } else {
+                // Buildings in blocks
+                const buildingHeight = 20 + Math.random() * 80;
+                const isLandmark = Math.random() < 0.05;
+                
+                if (isLandmark) {
+                    landmarks.push({
+                        x: x + blockSize/2,
+                        z: z + blockSize/2,
+                        height: buildingHeight * 2,
+                        type: Math.floor(Math.random() * 5),
+                        name: getLandmarkName()
+                    });
+                } else {
+                    buildings.push({
+                        x: x + blockSize/2,
+                        z: z + blockSize/2,
+                        width: blockSize - roadWidth - 10,
+                        depth: blockSize - roadWidth - 10,
+                        height: buildingHeight,
+                        color: getRandomBuildingColor()
+                    });
+                }
+            }
+        }
+        
+        progress++;
+        document.getElementById('loadingProgress').style.width = (progress / totalSteps * 100) + '%';
+    }
+    
+    // Add major Seoul landmarks
+    addLandmarks();
+}
+
+function getLandmarkName() {
+    const names = ['N 서울타워', '경복궁', '롯데타워', '동대문', '시청', '강남역', '명동', '홍대'];
+    return names[Math.floor(Math.random() * names.length)];
+}
+
+function getRandomBuildingColor() {
+    const colors = ['#8e9aaf', '#cbd5e1', '#64748b', '#475569', '#94a3b8', '#334155'];
+    return colors[Math.floor(Math.random() * colors.length)];
+}
+
+function addLandmarks() {
+    // N Seoul Tower (approximate center)
+    landmarks.push({ x: 50, z: 50, height: 200, type: 5, name: 'N 서울타워', radius: 30 });
+    
+    // Han River bridges
+    for (let i = -3; i <= 3; i++) {
+        landmarks.push({ 
+            x: i * 300, 
+            z: 400, 
+            height: 40, 
+            type: 6, 
+            name: '한강대교',
+            width: 300,
+            length: 60
+        });
+    }
+}
+
+function changeCar() {
+    const carType = document.getElementById('carSelect').value;
+    const car = carTypes[carType];
+    player.maxSpeed = car.maxSpeed;
+    player.acceleration = car.acceleration;
+    player.width = car.width;
+    player.height = car.height;
+    player.length = car.length;
+    player.color = car.color;
+}
+
+function update(deltaTime) {
+    // Car controls
+    if (keys['KeyW'] || keys['ArrowUp']) {
+        player.speed += player.acceleration;
+    }
+    if (keys['KeyS'] || keys['ArrowDown']) {
+        player.speed -= player.braking;
+    }
+    if (keys['Space']) {
+        player.speed *= 0.95; // Handbrake
+    }
+    
+    // Friction
+    player.speed *= 0.98;
+    player.speed = Math.max(0, Math.min(player.speed, player.maxSpeed));
+    
+    // Turning
+    if (Math.abs(player.speed) > 1) {
+        if (keys['KeyA'] || keys['ArrowLeft']) {
+            player.angle -= player.turning * (player.speed / player.maxSpeed);
+        }
+        if (keys['KeyD'] || keys['ArrowRight']) {
+            player.angle += player.turning * (player.speed / player.maxSpeed);
+        }
+    }
+    
+    // Camera follow
+    if (camera.mode === 0) {
+        camera.x = player.x - Math.sin(player.angle) * camera.distance;
+        camera.z = player.z - Math.cos(player.angle) * camera.distance;
+        camera.y = player.y + 50;
+        camera.angleY = player.angle;
+    } else if (camera.mode === 1) {
+        camera.x = player.x;
+        camera.z = player.z - 500;
+        camera.y = player.y + 500;
+        camera.angleY = 0;
+        camera.angleX = 0.8;
+    }
+    
+    // Update position
+    player.x += Math.sin(player.angle) * player.speed;
+    player.z += Math.cos(player.angle) * player.speed;
+    
+    // Boundaries
+    player.x = Math.max(-citySize/2, Math.min(citySize/2, player.x));
+    player.z = Math.max(-citySize/2, Math.min(citySize/2, player.z));
+    
+    // Update UI
+    document.getElementById('speedValue').textContent = Math.floor(player.speed);
+    
+    // Location based on position
+    updateLocation();
+}
+
+function updateLocation() {
+    const absX = Math.abs(player.x);
+    const absZ = Math.abs(player.z);
+    
+    let location = '서울시';
+    if (absX < 200 && absZ < 200) location = '시청 앞';
+    else if (player.x > 500 && player.z > 500) location = '강남구';
+    else if (player.x < -500 && player.z > 500) location = '영등포구';
+    else if (player.x > 500 && player.z < -500) location = '성동구';
+    else if (player.x < -500 && player.z < -500) location = '은평구';
+    else if (absX < 100 && player.z > 300) location = '한강';
+    else if (player.x > 800 && absZ < 200) location = '잠실';
+    else if (player.x < -800 && absZ < 200) location = '김포공항';
+    
+    document.getElementById('location').textContent = location;
+}
+
+function draw() {
+    // Clear
+    ctx.fillStyle = '#87CEEB';
+    ctx.fillRect(0, 0, width, height);
+    
+    // Sky gradient
+    const skyGradient = ctx.createLinearGradient(0, 0, 0, height);
+    skyGradient.addColorStop(0, '#1a1a2e');
+    skyGradient.addColorStop(0.5, '#16213e');
+    skyGradient.addColorStop(1, '#0f3460');
+    ctx.fillStyle = skyGradient;
+    ctx.fillRect(0, 0, width, height);
+    
+    // Draw ground
+    drawGround();
+    
+    // Draw buildings (back to front sorting)
+    const renderList = [];
+    
+    // Add buildings to render list
+    buildings.forEach(b => {
+        const dx = b.x - camera.x;
+        const dz = b.z - camera.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 1500) {
+            renderList.push({ type: 'building', obj: b, dist: dist });
+        }
+    });
+    
+    // Add landmarks to render list
+    landmarks.forEach(l => {
+        const dx = l.x - camera.x;
+        const dz = l.z - camera.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 1500) {
+            renderList.push({ type: 'landmark', obj: l, dist: dist });
+        }
+    });
+    
+    // Add roads
+    roads.forEach(r => {
+        const dx = r.x - camera.x;
+        const dz = r.z - camera.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 1500) {
+            renderList.push({ type: 'road', obj: r, dist: dist });
+        }
+    });
+    
+    // Sort by distance (far to near)
+    renderList.sort((a, b) => b.dist - a.dist);
+    
+    // Render all objects
+    renderList.forEach(item => {
+        if (item.type === 'building') drawBuilding(item.obj);
+        else if (item.type === 'landmark') drawLandmark(item.obj);
+        else if (item.type === 'road') drawRoad(item.obj);
+    });
+    
+    // Draw player car
+    drawPlayerCar();
+    
+    // Draw minimap
+    drawMinimap();
+    
+    // FPS counter
+    frameCount++;
+    const now = performance.now();
+    if (now - lastFpsUpdate >= 1000) {
+        fps = frameCount;
+        frameCount = 0;
+        lastFpsUpdate = now;
+        document.getElementById('fps').textContent = fps;
+    }
+}
+
+function project(x, y, z) {
+    // Simple 3D projection
+    const dx = x - camera.x;
+    const dy = y - camera.y;
+    const dz = z - camera.z;
+    
+    // Rotate around Y axis
+    const cosY = Math.cos(-camera.angleY);
+    const sinY = Math.sin(-camera.angleY);
+    const rx = dx * cosY - dz * sinY;
+    const rz = dx * sinY + dz * cosY;
+    
+    // Rotate around X axis
+    const cosX = Math.cos(-camera.angleX);
+    const sinX = Math.sin(-camera.angleX);
+    const ry = dy * cosX - rz * sinX;
+    const rz2 = dy * sinX + rz * cosX;
+    
+    if (rz2 <= 0) return null;
+    
+    const fov = 800;
+    const scale = fov / rz2;
+    
+    return {
+        x: width / 2 + rx * scale,
+        y: height / 2 - ry * scale,
+        scale: scale
+    };
+}
+
+function drawGround() {
+    // Draw simplified ground plane
+    const horizon = height / 2;
+    const groundGradient = ctx.createLinearGradient(0, horizon, 0, height);
+    groundGradient.addColorStop(0, '#2d3436');
+    groundGradient.addColorStop(1, '#1a1a2e');
+    ctx.fillStyle = groundGradient;
+    ctx.fillRect(0, horizon, width, height / 2);
+}
+
+function drawBuilding(b) {
+    const p1 = project(b.x - b.width/2, 0, b.z - b.depth/2);
+    const p2 = project(b.x + b.width/2, 0, b.z - b.depth/2);
+    const p3 = project(b.x + b.width/2, 0, b.z + b.depth/2);
+    const p4 = project(b.x - b.width/2, 0, b.z + b.depth/2);
+    
+    const p5 = project(b.x - b.width/2, -b.height, b.z - b.depth/2);
+    const p6 = project(b.x + b.width/2, -b.height, b.z - b.depth/2);
+    const p7 = project(b.x + b.width/2, -b.height, b.z + b.depth/2);
+    const p8 = project(b.x - b.width/2, -b.height, b.z + b.depth/2);
+    
+    if (!p1 || !p2 || !p3 || !p4 || !p5 || !p6 || !p7 || !p8) return;
+    
+    // Front face
+    ctx.fillStyle = adjustColor(b.color, -20);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.lineTo(p6.x, p6.y);
+    ctx.lineTo(p5.x, p5.y);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Side face
+    ctx.fillStyle = adjustColor(b.color, -40);
+    ctx.beginPath();
+    ctx.moveTo(p2.x, p2.y);
+    ctx.lineTo(p3.x, p3.y);
+    ctx.lineTo(p7.x, p7.y);
+    ctx.lineTo(p6.x, p6.y);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Top face
+    ctx.fillStyle = adjustColor(b.color, 20);
+    ctx.beginPath();
+    ctx.moveTo(p5.x, p5.y);
+    ctx.lineTo(p6.x, p6.y);
+    ctx.lineTo(p7.x, p7.y);
+    ctx.lineTo(p8.x, p8.y);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Windows (simplified)
+    ctx.fillStyle = '#f1c40f';
+    const windowRows = Math.floor(b.height / 15);
+    const windowCols = Math.floor(b.width / 10);
+    for (let i = 0; i < windowRows; i++) {
+        for (let j = 0; j < windowCols; j++) {
+            if (Math.random() > 0.3) {
+                const wx = p1.x + (p2.x - p1.x) * (j / windowCols);
+                const wy = p1.y + (p5.y - p1.y) * (i / windowRows);
+                ctx.fillRect(wx - 2, wy - 2, 4, 4);
+            }
+        }
+    }
+}
+
+function drawLandmark(l) {
+    if (l.type === 5) {
+        // N Seoul Tower
+        const base = project(l.x, 0, l.z);
+        const top = project(l.x, -l.height, l.z);
+        
+        if (!base || !top) return;
+        
+        // Tower structure
+        ctx.strokeStyle = '#ecf0f1';
+        ctx.lineWidth = 8 * top.scale;
+        ctx.beginPath();
+        ctx.moveTo(base.x, base.y);
+        ctx.lineTo(top.x, top.y);
+        ctx.stroke();
+        
+        // Observation deck
+        const deckY = project(l.x, -l.height * 0.7, l.z);
+        ctx.fillStyle = '#e74c3c';
+        ctx.beginPath();
+        ctx.arc(deckY.x, deckY.y, 15 * deckY.scale, 0, Math.PI * 2);
+        ctx.fill();
+    } else if (l.type === 6) {
+        // Bridge
+        const p1 = project(l.x - l.width/2, 0, l.z);
+        const p2 = project(l.x + l.width/2, 0, l.z);
+        
+        if (!p1 || !p2) return;
+        
+        ctx.fillStyle = '#95a5a6';
+        ctx.fillRect(p1.x, p1.y, p2.x - p1.x, 10 * p1.scale);
+    }
+}
+
+function drawRoad(r) {
+    const p1 = project(r.x, 0, r.z);
+    const p2 = project(r.x + (r.type === 'main' ? 100 : 50), 0, r.z);
+    
+    if (!p1 || !p2) return;
+    
+    // Road surface
+    ctx.fillStyle = r.type === 'main' ? '#34495e' : '#2c3e50';
+    const roadWidth = r.width * p1.scale;
+    ctx.fillRect(p1.x - roadWidth/2, p1.y - 5, p2.x - p1.x, roadWidth);
+    
+    // Road markings
+    if (r.type === 'main') {
+        ctx.strokeStyle = '#f1c40f';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([20, 20]);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+}
+
+function drawPlayerCar() {
+    const carX = player.x;
+    const carZ = player.z;
+    const carY = 0;
+    
+    // Draw car from current camera perspective
+    const rearLeft = project(
+        carX - Math.sin(player.angle) * player.length/2 - Math.cos(player.angle) * player.width/2,
+        carY - player.height,
+        carZ - Math.cos(player.angle) * player.length/2 + Math.sin(player.angle) * player.width/2
+    );
+    
+    const rearRight = project(
+        carX - Math.sin(player.angle) * player.length/2 + Math.cos(player.angle) * player.width/2,
+        carY - player.height,
+        carZ - Math.cos(player.angle) * player.length/2 - Math.sin(player.angle) * player.width/2
+    );
+    
+    const frontLeft = project(
+        carX + Math.sin(player.angle) * player.length/2 - Math.cos(player.angle) * player.width/2,
+        carY - player.height,
+        carZ + Math.cos(player.angle) * player.length/2 + Math.sin(player.angle) * player.width/2
+    );
+    
+    const frontRight = project(
+        carX + Math.sin(player.angle) * player.length/2 + Math.cos(player.angle) * player.width/2,
+        carY - player.height,
+        carZ + Math.cos(player.angle) * player.length/2 - Math.sin(player.angle) * player.width/2
+    );
+    
+    if (!rearLeft || !rearRight || !frontLeft || !frontRight) return;
+    
+    // Car body
+    ctx.fillStyle = player.color;
+    ctx.beginPath();
+    ctx.moveTo(rearLeft.x, rearLeft.y);
+    ctx.lineTo(rearRight.x, rearRight.y);
+    ctx.lineTo(frontRight.x, frontRight.y);
+    ctx.lineTo(frontLeft.x, frontLeft.y);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Car roof/cabin
+    const roofHeight = player.height * 0.6;
+    const roofRearLeft = project(
+        carX - Math.sin(player.angle) * player.length/4 - Math.cos(player.angle) * player.width/3,
+        carY - player.height - roofHeight,
+        carZ - Math.cos(player.angle) * player.length/4 + Math.sin(player.angle) * player.width/3
+    );
+    
+    const roofRearRight = project(
+        carX - Math.sin(player.angle) * player.length/4 + Math.cos(player.angle) * player.width/3,
+        carY - player.height - roofHeight,
+        carZ - Math.cos(player.angle) * player.length/4 - Math.sin(player.angle) * player.width/3
+    );
+    
+    const roofFrontLeft = project(
+        carX + Math.sin(player.angle) * player.length/4 - Math.cos(player.angle) * player.width/3,
+        carY - player.height - roofHeight,
+        carZ + Math.cos(player.angle) * player.length/4 + Math.sin(player.angle) * player.width/3
+    );
+    
+    const roofFrontRight = project(
+        carX + Math.sin(player.angle) * player.length/4 + Math.cos(player.angle) * player.width/3,
+        carY - player.height - roofHeight,
+        carZ + Math.cos(player.angle) * player.length/4 - Math.sin(player.angle) * player.width/3
+    );
+    
+    if (roofRearLeft && roofRearRight && roofFrontLeft && roofFrontRight) {
+        ctx.fillStyle = adjustColor(player.color, -30);
+        ctx.beginPath();
+        ctx.moveTo(roofRearLeft.x, roofRearLeft.y);
+        ctx.lineTo(roofRearRight.x, roofRearRight.y);
+        ctx.lineTo(roofFrontRight.x, roofFrontRight.y);
+        ctx.lineTo(roofFrontLeft.x, roofFrontLeft.y);
+        ctx.closePath();
+        ctx.fill();
+    }
+    
+    // Headlights
+    ctx.fillStyle = '#ffff00';
+    const headlightL = project(
+        carX + Math.sin(player.angle) * player.length/2 - Math.cos(player.angle) * player.width/3,
+        carY - player.height * 0.5,
+        carZ + Math.cos(player.angle) * player.length/2 + Math.sin(player.angle) * player.width/3
+    );
+    const headlightR = project(
+        carX + Math.sin(player.angle) * player.length/2 + Math.cos(player.angle) * player.width/3,
+        carY - player.height * 0.5,
+        carZ + Math.cos(player.angle) * player.length/2 - Math.sin(player.angle) * player.width/3
+    );
+    
+    if (headlightL) ctx.beginPath(); ctx.arc(headlightL.x, headlightL.y, 3 * headlightL.scale, 0, Math.PI * 2); ctx.fill();
+    if (headlightR) ctx.beginPath(); ctx.arc(headlightR.x, headlightR.y, 3 * headlightR.scale, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawMinimap() {
+    minimapCtx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    minimapCtx.fillRect(0, 0, 200, 200);
+    
+    const mapScale = 200 / citySize;
+    const centerX = 100;
+    const centerY = 100;
+    
+    // Draw roads on minimap
+    minimapCtx.strokeStyle = '#555';
+    minimapCtx.lineWidth = 2;
+    roads.forEach(r => {
+        if (r.type === 'main') {
+            minimapCtx.strokeStyle = '#888';
+            minimapCtx.lineWidth = 4;
+        } else {
+            minimapCtx.strokeStyle = '#555';
+            minimapCtx.lineWidth = 2;
+        }
+        minimapCtx.beginPath();
+        minimapCtx.moveTo(centerX + (r.x - citySize/2) * mapScale, centerY + (r.z - citySize/2) * mapScale);
+        minimapCtx.lineTo(centerX + (r.x + 50 - citySize/2) * mapScale, centerY + (r.z - citySize/2) * mapScale);
+        minimapCtx.stroke();
+    });
+    
+    // Draw player position
+    minimapCtx.fillStyle = '#00ff00';
+    minimapCtx.beginPath();
+    minimapCtx.arc(centerX + (player.x - citySize/2) * mapScale, centerY + (player.z - citySize/2) * mapScale, 5, 0, Math.PI * 2);
+    minimapCtx.fill();
+    
+    // Draw player direction
+    minimapCtx.strokeStyle = '#00ff00';
+    minimapCtx.lineWidth = 2;
+    minimapCtx.beginPath();
+    minimapCtx.moveTo(centerX + (player.x - citySize/2) * mapScale, centerY + (player.z - citySize/2) * mapScale);
+    minimapCtx.lineTo(
+        centerX + (player.x - citySize/2) * mapScale + Math.sin(player.angle) * 15,
+        centerY + (player.z - citySize/2) * mapScale + Math.cos(player.angle) * 15
+    );
+    minimapCtx.stroke();
+    
+    // Draw landmarks on minimap
+    minimapCtx.fillStyle = '#ff0000';
+    landmarks.forEach(l => {
+        if (l.type === 5) { // N Seoul Tower
+            minimapCtx.beginPath();
+            minimapCtx.arc(centerX + (l.x - citySize/2) * mapScale, centerY + (l.z - citySize/2) * mapScale, 4, 0, Math.PI * 2);
+            minimapCtx.fill();
+        }
+    });
+}
+
+function adjustColor(hex, amount) {
+    const num = parseInt(hex.replace('#', ''), 16);
+    const r = Math.max(0, Math.min(255, (num >> 16) + amount));
+    const g = Math.max(0, Math.min(255, ((num >> 8) & 0x00FF) + amount));
+    const b = Math.max(0, Math.min(255, (num & 0x0000FF) + amount));
+    return '#' + (0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).substr(1);
+}
+
+function gameLoop() {
+    const now = performance.now();
+    const deltaTime = (now - lastTime) / 1000;
+    lastTime = now;
+    
+    update(deltaTime);
+    draw();
+    
+    requestAnimationFrame(gameLoop);
+}
+
+// Camera switch
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyC') {
+        camera.mode = (camera.mode + 1) % 3;
+    }
+});
+
+// Start game
+init();
+</script>
+</body>
+</html>
